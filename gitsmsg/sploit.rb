@@ -1,6 +1,5 @@
 require 'socket'
 require 'timeout'
-require './hex'
 
 MESSAGE_LOGIN        = 0x01
 MESSAGE_DELETE       = 0x02
@@ -257,5 +256,5 @@ loop do
   if(a.nil? || a == "")
     exit
   end
-  Hex.print(a)
+  puts(a)
 end
