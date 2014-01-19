@@ -1,0 +1,28 @@
+set pagination off
+
+b *0x000000000040160C
+run
+
+cont
+cont
+cont
+cont
+cont
+
+delete 1
+
+# The vuln
+#b *0x7ffff7ff8086
+#cont
+
+# The return
+b *0x7ffff7ff835e
+cont
+
+# The call into the shellcode
+b *0x000000000040160C
+cont
+
+x/i $rip
+#x/32xb $rdx
+cont
