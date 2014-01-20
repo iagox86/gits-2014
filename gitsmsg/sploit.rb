@@ -65,6 +65,7 @@ def receive_code(s, expected, context)
 
   if(code != expected)
     puts("Error! Unexpected response: 0x%08x :: %s" % [code, context])
+    puts("Often, re-running it will fix this, it's due to network or randomization issues")
     exit
   end
 end
