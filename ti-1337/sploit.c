@@ -73,7 +73,7 @@ void do_push(int s, char *value)
     perror("send error!");
 }
 
-/* This is the place where th perogram will jump. It's the program's stack. */
+/* This is the place where th program will jump. It's the program's stack. */
 #define TARGET "\x50\x31\x60\x00\x00\x00\x00\x00"
 
 /* The address and port for the shellcode */

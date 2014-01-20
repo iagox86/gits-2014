@@ -21,13 +21,12 @@ DESIRED_FP      = 0x00007fffffffdfe8 + (7 * 8 * IS_REAL_TARGET)
 # influence the histogram values for the important offsets
 @@used_chars = []
 
-@@n = 0
-
 # Keep track of how many bytes were printed, so we can print padding after
 # (and avoid changing the size of the stack)
 #
 # I added this because I noticed addresses on the stack shifting relative
 # to each other, a bit, though that may have been sleep-deprived daftness
+@@n = 0
 def my_print(str)
   print(str)
   @@n += str.length
